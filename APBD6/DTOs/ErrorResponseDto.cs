@@ -2,5 +2,5 @@
 
 public class ErrorResponseDto
 {
-    public int IdAppointment { get; set; }
+    public string Massage { get; set; } = string.Empty;
 }

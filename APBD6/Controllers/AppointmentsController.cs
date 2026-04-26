@@ -1,5 +1,6 @@
 ﻿using APBD6.Exceptions;
 using APBD6.Services;
+using APBD6.DTOs;
 using Microsoft.AspNetCore.Mvc;
 
 namespace APBD6.Controllers;
@@ -24,6 +25,24 @@ public class AppointmentsController(IAppointmentService service) : ControllerBas
         catch (NotFoundException e)
         {
             return NotFound(e.Message);
+        }
+    }
+    
+    [HttpPost]
+    public async Task<IActionResult> CreateAsync([FromBody] CreateAppointmentRequestDto dto, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await service.AddAsync(dto, cancellationToken);
+            return Created();
+        }
+        catch (NotFoundException e)
+        {
+            return NotFound(e.Message);
+        }
+        catch (ConflictException e)
+        {
+            return Conflict(e.Message);
         }
     }
 }

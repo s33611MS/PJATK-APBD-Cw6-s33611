@@ -11,5 +11,6 @@ public class CreateAppointmentRequestDto
     [Required]
     public DateTime AppointmentDate { get; set; }
     [Required]
+    [StringLength(250)]
     public string Reason { get; set; } = string.Empty;
 }
