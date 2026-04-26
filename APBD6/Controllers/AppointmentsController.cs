@@ -44,5 +44,49 @@ public class AppointmentsController(IAppointmentService service) : ControllerBas
         {
             return Conflict(e.Message);
         }
+        catch (BadRequestException e)
+        {
+            return BadRequest(e.Message);
+        }
+    }
+    
+    [HttpPut("{id:int}")]
+    public async Task<IActionResult> UpdateAsync([FromRoute] int id, [FromBody] UpdateAppointmentRequestDto dto, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await service.UpdateAsync(id, dto, cancellationToken);
+            return NoContent();
+        }
+        catch (NotFoundException e)
+        {
+            return NotFound(e.Message);
+        }
+        catch (ConflictException e)
+        {
+            return Conflict(e.Message);
+        }
+        catch (BadRequestException e)
+        {
+            return BadRequest(e.Message);
+        }
+    }
+    
+    [HttpDelete("{id:int}")]
+    public async Task<IActionResult> DeleteAsync([FromRoute] int id, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await service.RemoveAsync(id, cancellationToken);
+            return NoContent();
+        }
+        catch (NotFoundException e)
+        {
+            return NotFound(e.Message);
+        }
+        catch (ConflictException e)
+        {
+            return Conflict(e.Message);
+        }
     }
 }

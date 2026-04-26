@@ -106,47 +106,42 @@ public class AppointmentService(IConfiguration configuration) : IAppointmentServ
     {
         await using var connection = new SqlConnection(configuration.GetConnectionString("DefaultConnection"));
         await using var command = new SqlCommand();
-        
+
         await connection.OpenAsync(cancellationToken);
-        
+
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         command.Connection = connection;
         command.Transaction = (SqlTransaction)transaction;
 
+
+        await ExistsAsync("select 1 from Patients where IdPatient = @Id AND IsActive = 1",
+            [new SqlParameter("@Id", dto.IdPatient)], $"There is no active patient with id: {dto.IdDoctor}",
+            command, cancellationToken);
+
+        await ExistsAsync("select 1 from Doctors where IdDoctor = @Id AND IsActive = 1",
+            [new SqlParameter("@Id", dto.IdDoctor)], $"There is no active doctor with id: {dto.IdDoctor}",
+            command, cancellationToken);
+
+        if (DateTime.Now > dto.AppointmentDate)
+            throw new BadRequestException(new ErrorResponseDto { Massage = "Appointment date cannot be in the past." });
+
+        command.CommandText =
+            "SELECT 1 from Appointments WHERE AppointmentDate = @AppointmentDate AND @IdDoctor = IdDoctor";
+        command.Parameters.AddWithValue("@AppointmentDate", dto.AppointmentDate);
+        command.Parameters.AddWithValue("@IdDoctor", dto.IdDoctor);
+        var exists = await command.ExecuteScalarAsync(cancellationToken);
+
+        if (exists is not null)
+            throw new ConflictException(new ErrorResponseDto
+            {
+                Massage =
+                    $"There is already appointment for doctor with id: {dto.IdDoctor} on date: {dto.AppointmentDate}"
+            });
+
+        command.Parameters.Clear();
+        
         try
-        { 
-            command.CommandText = "select 1 from Patients where IdPatient = @Id AND IsActive = 1";
-            command.Parameters.AddWithValue("@Id", dto.IdPatient); 
-            var exists = await command.ExecuteScalarAsync(cancellationToken);
-            
-            if (exists is null) 
-                throw new NotFoundException(new ErrorResponseDto{Massage = $"There is no active patient with id: {dto.IdPatient}"});
-            
-            command.Parameters.Clear();
-            
-            command.CommandText = "select 1 from Doctors where IdDoctor = @Id AND IsActive = 1";
-            command.Parameters.AddWithValue("@Id", dto.IdDoctor); 
-            exists = await command.ExecuteScalarAsync(cancellationToken); 
-            
-            if (exists is null) 
-                throw new NotFoundException(new ErrorResponseDto{Massage = $"There is no active doctor with id: {dto.IdDoctor}"});
-            
-            command.Parameters.Clear();
-            
-            if (DateTime.Now > dto.AppointmentDate)
-                throw new ConflictException(new ErrorResponseDto{Massage = "Appointment date cannot be in the past."});
-            
-            command.CommandText = "SELECT 1 from Appointments WHERE AppointmentDate = @AppointmentDate AND @IdDoctor = IdDoctor";
-            command.Parameters.AddWithValue("@AppointmentDate", dto.AppointmentDate);
-            command.Parameters.AddWithValue("@IdDoctor", dto.IdDoctor); 
-            exists = await command.ExecuteScalarAsync(cancellationToken); 
-            
-            if (exists is not null) 
-                throw new ConflictException(new ErrorResponseDto{Massage = $"There is already appointment for doctor with id: {dto.IdDoctor} on date: {dto.AppointmentDate}"});
-            
-            command.Parameters.Clear();
-            
-            
+        {
 
             command.CommandText = """
                                   insert into Appointments (IdPatient, IdDoctor, AppointmentDate, Status, Reason)
@@ -171,14 +166,148 @@ public class AppointmentService(IConfiguration configuration) : IAppointmentServ
             throw;
         }
     }
-    
-    public async Task UpdateAsync(int id, UpdateAppointmentRequestDto dto, CancellationToken cancellationToken = default)
+
+    public async Task UpdateAsync(int id, UpdateAppointmentRequestDto dto,
+        CancellationToken cancellationToken = default)
     {
-        throw new NotImplementedException();
+        await using var connection = new SqlConnection(configuration.GetConnectionString("DefaultConnection"));
+        await using var command = new SqlCommand();
+
+        await connection.OpenAsync(cancellationToken);
+
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        command.Connection = connection;
+        command.Transaction = (SqlTransaction)transaction;
+
+
+        await ExistsAsync("select 1 from Patients where IdPatient = @Id AND IsActive = 1",
+            [new SqlParameter("@Id", dto.IdPatient)], $"There is no active patient with id: {dto.IdPatient}",
+            command, cancellationToken);
+
+        await ExistsAsync("select 1 from Doctors where IdDoctor = @Id AND IsActive = 1",
+            [new SqlParameter("@Id", dto.IdDoctor)], $"There is no active doctor with id: {dto.IdDoctor}",
+            command, cancellationToken);
+
+        var possibleStatus = new List<string> { "Scheduled", "Completed", "Cancelled" };
+        if (!possibleStatus.Contains(dto.Status))
+            throw new BadRequestException(new ErrorResponseDto
+                { Massage = "Status should be either: scheduled, completed, or cancelled" });
+
+        command.CommandText = "SELECT Status, AppointmentDate from Appointments WHERE IdAppointment = @IdAppointment";
+        command.Parameters.AddWithValue("@IdAppointment", id);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+        if (!await reader.ReadAsync(cancellationToken))
+            throw new NotFoundException(new ErrorResponseDto { Massage = $"There is no appointment with id: {id}" });
+
+        if (reader.GetString(0) == "Completed")
+        {
+            dto.AppointmentDate = reader.GetDateTime(1);
+            reader.Close();
+        }
+        else
+        {
+            reader.Close();
+            command.CommandText = "SELECT 1 from Appointments WHERE AppointmentDate = @AppointmentDate AND @IdDoctor = IdDoctor";
+            command.Parameters.AddWithValue("@AppointmentDate", dto.AppointmentDate);
+            command.Parameters.AddWithValue("@IdDoctor", dto.IdDoctor);
+            var exists = await command.ExecuteScalarAsync(cancellationToken);
+
+            if (exists is not null)
+                throw new ConflictException(new ErrorResponseDto
+                {
+                    Massage =
+                        $"There is already appointment for doctor with id: {dto.IdDoctor} on date: {dto.AppointmentDate}"
+                });
+        }
+
+        command.Parameters.Clear();
+        
+        try
+        {
+            command.CommandText = """
+                                  update Appointments set
+                                  IdPatient = @IdPatient,
+                                  IdDoctor = @IdDoctor,
+                                  AppointmentDate = @AppointmentDate,
+                                  Status = @Status,
+                                  Reason = @Reason,
+                                  InternalNotes = @InternalNotes
+                                  where IdAppointment = @Id
+                                  """;
+
+            command.Parameters.AddWithValue("@Id", id);
+            command.Parameters.AddWithValue("@IdPatient", dto.IdPatient);
+            command.Parameters.AddWithValue("@IdDoctor", dto.IdDoctor);
+            command.Parameters.AddWithValue("@AppointmentDate", dto.AppointmentDate);
+            command.Parameters.AddWithValue("@Status", dto.Status);
+            command.Parameters.AddWithValue("@Reason", dto.Reason);
+            command.Parameters.AddWithValue("@InternalNotes", dto.InternalNotes);
+
+            await command.ExecuteNonQueryAsync(cancellationToken);
+            command.Parameters.Clear();
+
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (Exception)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
     }
 
     public async Task RemoveAsync(int id, CancellationToken cancellationToken = default)
     {
-        throw new NotImplementedException();
+        await using var connection = new SqlConnection(configuration.GetConnectionString("DefaultConnection"));
+        await using var command = new SqlCommand();
+        
+        command.Connection = connection;
+        
+        await connection.OpenAsync(cancellationToken);
+        
+        command.CommandText = "SELECT Status from Appointments WHERE IdAppointment = @IdAppointment";
+        command.Parameters.AddWithValue("@IdAppointment", id);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        
+        if (!await reader.ReadAsync(cancellationToken))
+            throw new NotFoundException(new ErrorResponseDto{Massage = $"There is no appointment with id: {id}"});
+            
+        if (reader.GetString(0) == "Completed")
+        {
+            throw new ConflictException(new ErrorResponseDto{Massage = "Completed appointment cannot be removed"});
+        }
+        
+        reader.Close();
+
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        command.Transaction = (SqlTransaction)transaction;
+
+        try
+        {
+            command.CommandText = "delete from Appointments where IdAppointment = @Id";
+            command.Parameters.AddWithValue("@Id", id);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+            
+            command.Parameters.Clear();
+            
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (Exception)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    private static async Task ExistsAsync(string query, List<SqlParameter> parameters, string msg, SqlCommand command, CancellationToken cancellationToken = default)
+    {
+        command.CommandText = query;
+        command.Parameters.AddRange(parameters.ToArray());
+        var exists = await command.ExecuteScalarAsync(cancellationToken);
+            
+        if (exists is null) 
+            throw new NotFoundException(new ErrorResponseDto{Massage = msg});
+            
+        command.Parameters.Clear();
     }
 }
