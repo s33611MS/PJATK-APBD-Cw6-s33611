@@ -1,12 +1,13 @@
 ﻿using System.Text;
 using APBD6.DTOs;
+using APBD6.Exceptions;
 using Microsoft.Data.SqlClient;
 
 namespace APBD6.Services;
 
 public class AppointmentService(IConfiguration configuration) : IAppointmentService
 {
-    public async Task<IEnumerable<AppointmentListDto>> GetAllAsync(CancellationToken cancellationToken = default)
+    public async Task<IEnumerable<AppointmentListDto>> GetAllAsync(string? status, string? patientLastName, CancellationToken cancellationToken = default)
     {
         await using var connection = new SqlConnection(configuration.GetConnectionString("DefaultConnection"));
         await using var command = new SqlCommand();
@@ -15,12 +16,23 @@ public class AppointmentService(IConfiguration configuration) : IAppointmentServ
         var result = new List<AppointmentListDto>();
         
         var sqlCommand = new StringBuilder("""
-                                           select a.IdAppointment, a.AppointmentDate, a.Status, a.Reason, CONCAT(p.FirstName, ' ', p.LastName), p.Email 
-                                           from Appointments a join Patients p on a.IdPatient = p.IdPatient
+                                           SELECT a.IdAppointment, a.AppointmentDate, a.Status, a.Reason, p.FirstName + N' ' + p.LastName AS PatientFullName, p.Email AS PatientEmail
+                                           FROM Appointments a JOIN Patients p ON p.IdPatient = a.IdPatient
+                                           WHERE (@Status IS NULL OR a.Status = @Status)
+                                             AND (@PatientLastName IS NULL OR p.LastName = @PatientLastName)
+                                           ORDER BY a.AppointmentDate;
                                            """);
-
+        
         command.Connection = connection;
         command.CommandText = sqlCommand.ToString();
+        
+        var parameters = new List<SqlParameter>();
+
+        parameters.Add(new SqlParameter("@Status", status is not null ? status : DBNull.Value));
+        
+        parameters.Add(new SqlParameter("@PatientLastName", patientLastName is not null ? patientLastName : DBNull.Value));
+        
+        command.Parameters.AddRange(parameters.ToArray());
 
         await connection.OpenAsync(cancellationToken);
         
@@ -43,7 +55,51 @@ public class AppointmentService(IConfiguration configuration) : IAppointmentServ
 
     public async Task<AppointmentDetailsDto> GetByIdAsync(int id, CancellationToken cancellationToken = default)
     {
-        throw new NotImplementedException();
+        await using var connection = new SqlConnection(configuration.GetConnectionString("DefaultConnection"));
+        await using var command = new SqlCommand();
+        command.Connection = connection;
+        
+        AppointmentDetailsDto? result = null;
+        
+        const string sqlCommand = """
+                                  select a.IdAppointment, a.AppointmentDate, a.Status, a.Reason, 
+                                  CONCAT(p.FirstName, ' ', p.LastName), p.Email, p.PhoneNumber, 
+                                  d.LicenseNumber, a.InternalNotes, a.CreatedAt
+                                  from Appointments a join Patients p on a.IdPatient = p.IdPatient join Doctors d on a.IdDoctor = d.IdDoctor
+                                  WHERE a.IdAppointment = @Id
+                                  """;
+        
+        command.Connection = connection;
+        command.CommandText = sqlCommand;
+        command.Parameters.AddWithValue("@Id", id);
+
+        await connection.OpenAsync(cancellationToken);
+
+        var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result ??= new AppointmentDetailsDto
+            {
+                IdAppointment = reader.GetInt32(0),
+                AppointmentDate = reader.GetDateTime(1),
+                Status = reader.GetString(2),
+                Reason = reader.GetString(3),
+                PatientFullName = reader.GetString(4),
+                PatientEmail = reader.GetString(5),
+                PhoneNumber = reader.GetString(6),
+                DoctorsLicenseNumber = reader.GetString(7),
+                InternalNotes = reader.IsDBNull(8) ? null : reader.GetString(8),
+                CreatedAt =  reader.GetDateTime(9),
+            };
+        }
+
+        if (result is null)
+        {
+            throw new NotFoundException(new ErrorResponseDto{IdAppointment = id});
+        }
+        
+        return result;
     }
 
     public async Task<CreateAppointmentRequestDto> AddAsync(CreateAppointmentRequestDto dto, CancellationToken cancellationToken = default)
